@@ -4,23 +4,59 @@
 import 'dart:async';
 import 'dart:ffi';
 import 'dart:isolate';
+import 'dart:io';
 
 import 'package:ffi/ffi.dart';
 import 'package:win32/win32.dart';
 
+/// psapi.dll for process name
+final _psapi = DynamicLibrary.open('psapi.dll');
+final _GetModuleFileNameExW = _psapi
+    .lookupFunction<
+      Uint32 Function(
+        IntPtr hProcess,
+        IntPtr hModule,
+        Pointer<Utf16> lpFilename,
+        Uint32 nSize,
+      ),
+      int Function(
+        int hProcess,
+        int hModule,
+        Pointer<Utf16> lpFilename,
+        int nSize,
+      )
+    >('GetModuleFileNameExW');
+
 /// Entry point for the isolate.
-/// `sendPort` is the main isolate's ReceivePort.sendPort
 void trackerIsolateEntry(SendPort sendPort) {
-  const pollSeconds = 3; // poll interval (tweakable)
-  const idleThresholdMs = 60 * 1000; // user considered idle after this (60s)
+  const pollSeconds = 3; // poll interval
+  const idleThresholdMs = 60 * 1000; // idle after 60s
 
   String currentApp = '';
   String currentTitle = '';
   DateTime? currentStart;
+  DateTime currentDay = DateTime.now();
 
-  // Simple helper: get active window title (UTF-16)
-  // Get active window title (UTF-16)
-  // Get active window title (UTF-16)
+  // helper: send a completed session
+  void sendSession(String app, String title, DateTime start, DateTime end) {
+    final durationSec = end.difference(start).inSeconds;
+    final dateStr = start.toIso8601String().split('T')[0];
+
+    sendPort.send({
+      'type': 'session',
+      'app_name': app,
+      'window_title': title,
+      'process_name': app,
+      'start': start.toIso8601String(),
+      'end': end.toIso8601String(),
+      'start_ts': start.millisecondsSinceEpoch,
+      'end_ts': end.millisecondsSinceEpoch,
+      'duration_sec': durationSec,
+      'date': dateStr,
+    });
+  }
+
+  // get active window title
   String getActiveWindowTitle() {
     final hwnd = GetForegroundWindow();
     if (hwnd == 0) return '';
@@ -28,7 +64,6 @@ void trackerIsolateEntry(SendPort sendPort) {
     final length = GetWindowTextLength(hwnd);
     if (length <= 0) return '';
 
-    // allocate as Uint16 and cast to Utf16 when calling / converting
     final buffer = calloc<Uint16>(length + 1);
     try {
       final read = GetWindowText(hwnd, buffer.cast<Utf16>(), length + 1);
@@ -39,7 +74,46 @@ void trackerIsolateEntry(SendPort sendPort) {
     }
   }
 
-  // Idle detection using GetLastInputInfo
+  // get active process name
+  String getActiveProcessName() {
+    final hwnd = GetForegroundWindow();
+    if (hwnd == 0) return '';
+
+    final pidPtr = calloc<Uint32>();
+    try {
+      GetWindowThreadProcessId(hwnd, pidPtr);
+      final pid = pidPtr.value;
+      if (pid == 0) return '';
+
+      final hProcess = OpenProcess(
+        PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
+        FALSE,
+        pid,
+      );
+      if (hProcess == 0) return '';
+
+      final buffer = calloc<Uint16>(260); // MAX_PATH
+      try {
+        final len = _GetModuleFileNameExW(
+          hProcess,
+          0,
+          buffer.cast<Utf16>(),
+          260,
+        );
+        if (len == 0) return '';
+        final fullPath = buffer.cast<Utf16>().toDartString();
+        final exeName = fullPath.split(Platform.pathSeparator).last;
+        return exeName;
+      } finally {
+        calloc.free(buffer);
+        CloseHandle(hProcess);
+      }
+    } finally {
+      calloc.free(pidPtr);
+    }
+  }
+
+  // idle detection
   int getIdleMilliseconds() {
     final lastInputInfo = calloc<LASTINPUTINFO>();
     try {
@@ -54,35 +128,28 @@ void trackerIsolateEntry(SendPort sendPort) {
     }
   }
 
-  String simplifyAppNameFromTitle(String title) {
-    // naive heuristic: take first token or part before ' - ' which many browsers use
-    if (title.contains(' - ')) {
-      return title
-          .split(' - ')
-          .last
-          .trim(); // "Google Chrome" or website name - adjust if desired
-    }
-    if (title.length > 40) {
-      return title.substring(0, 40) + '...';
-    }
-    return title;
-  }
-
   Timer.periodic(Duration(seconds: pollSeconds), (timer) {
     try {
-      final idle = getIdleMilliseconds();
-      if (idle >= idleThresholdMs) {
-        // user idle — close any open session
+      final now = DateTime.now();
+
+      // --- handle midnight rollover ---
+      if (now.day != currentDay.day ||
+          now.month != currentDay.month ||
+          now.year != currentDay.year) {
+        // close previous session if active
         if (currentApp.isNotEmpty && currentStart != null) {
-          final end = DateTime.now().toUtc();
-          sendPort.send({
-            'type': 'session',
-            'app_name': currentApp,
-            'window_title': currentTitle,
-            'process_name': null,
-            'start': currentStart!.toIso8601String(),
-            'end': end.toIso8601String(),
-          });
+          sendSession(currentApp, currentTitle, currentStart!, now.toUtc());
+        }
+
+        // reset for new day and start fresh session if window exists
+        currentDay = now;
+        final proc = getActiveProcessName();
+        final title = getActiveWindowTitle();
+        if (proc.isNotEmpty) {
+          currentApp = proc;
+          currentTitle = title;
+          currentStart = DateTime.now().toUtc();
+        } else {
           currentApp = '';
           currentTitle = '';
           currentStart = null;
@@ -90,31 +157,36 @@ void trackerIsolateEntry(SendPort sendPort) {
         return;
       }
 
+      // --- idle detection ---
+      final idle = getIdleMilliseconds();
+      if (idle >= idleThresholdMs) {
+        if (currentApp.isNotEmpty && currentStart != null) {
+          final end = DateTime.now().toUtc();
+          sendSession(currentApp, currentTitle, currentStart!, end);
+          currentApp = '';
+          currentTitle = '';
+          currentStart = null;
+        }
+        return;
+      }
+
+      // --- active window tracking ---
+      final proc = getActiveProcessName();
       final title = getActiveWindowTitle();
-      if (title.isEmpty) return;
+      if (proc.isEmpty) return;
 
-      final app = simplifyAppNameFromTitle(title);
-
-      if (app != currentApp) {
+      if (proc != currentApp) {
         // close previous session
         if (currentApp.isNotEmpty && currentStart != null) {
           final end = DateTime.now().toUtc();
-          sendPort.send({
-            'type': 'session',
-            'app_name': currentApp,
-            'window_title': currentTitle,
-            'process_name': null,
-            'start': currentStart!.toIso8601String(),
-            'end': end.toIso8601String(),
-          });
+          sendSession(currentApp, currentTitle, currentStart!, end);
         }
         // start new session
-        currentApp = app;
+        currentApp = proc;
         currentTitle = title;
         currentStart = DateTime.now().toUtc();
       }
     } catch (e) {
-      // If the isolate throws, send error message to main for debug
       sendPort.send({'type': 'error', 'message': e.toString()});
     }
   });

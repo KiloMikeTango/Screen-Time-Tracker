@@ -86,10 +86,11 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        centerTitle: true,
         title: Text(
-          'Screen Time Tracker',
+          'Screentime Tracker',
           style: GoogleFonts.poppins(
-            fontWeight: FontWeight.w700,
+            fontWeight: FontWeight.w500,
             color: Colors.white,
           ),
         ),
@@ -183,30 +184,34 @@ class _HomePageState extends State<HomePage> {
 
             //width: 900, height: 720
             //width: 600, height 720
-            Text(
-              MediaQuery.of(context).size.width.toString(),
-              style: TextStyle(color: Colors.white),
-            ),
-            Text(
-              MediaQuery.of(context).size.height.toString(),
-              style: TextStyle(color: Colors.white),
-            ),
-            Text(
-              'Total Screen Time Today',
+            // Text(
+            //   MediaQuery.of(context).size.width.toString(),
+            //   style: TextStyle(color: Colors.white),
+            // ),
+            // Text(
+            //   MediaQuery.of(context).size.height.toString(),
+            //   style: TextStyle(color: Colors.white),
+            // ),
+            Center(
+              child: Text(
+                'Total Screen Time Today',
 
-              style: GoogleFonts.poppins(
-                fontSize: fontSize * 0.4,
-                color: Colors.white70,
-                fontWeight: FontWeight.w400,
+                style: GoogleFonts.poppins(
+                  fontSize: fontSize * 0.4,
+                  color: Colors.white70,
+                  fontWeight: FontWeight.w400,
+                ),
               ),
             ),
             SizedBox(height: padding / 2),
-            Text(
-              formatDurationSeconds(_totalSec.toInt()),
-              style: GoogleFonts.poppins(
-                fontSize: fontSize,
-                fontWeight: FontWeight.w300,
-                color: Colors.white,
+            Center(
+              child: Text(
+                formatDurationSeconds(_totalSec.toInt()),
+                style: GoogleFonts.poppins(
+                  fontSize: fontSize,
+                  fontWeight: FontWeight.w300,
+                  color: Colors.white,
+                ),
               ),
             ),
           ],

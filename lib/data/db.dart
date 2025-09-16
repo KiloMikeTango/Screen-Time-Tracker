@@ -16,7 +16,7 @@ class DB {
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
             app_name TEXT,
             window_title TEXT,
             process_name TEXT,
